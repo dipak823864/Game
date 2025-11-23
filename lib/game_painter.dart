@@ -1,19 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:vector_math/vector_math_64.dart' as v;
 import 'models.dart';
-import 'dart:math';
+import 'utils/camera.dart';
 
 class GamePainter extends CustomPainter {
   final NeonRunnerGame game;
+  final Camera camera;
 
-  GamePainter(this.game);
+  GamePainter(this.game) : camera = Camera(
+      position: v.Vector3(0, 6, 14),
+      target: v.Vector3(0, 2, -10),
+      up: v.Vector3(0, 1, 0),
+  );
 
   @override
   void paint(Canvas canvas, Size size) {
     // Fill Background
     final Rect bgRect = Rect.fromLTWH(0, 0, size.width, size.height);
-    final Paint bgPaint = Paint()
-      ..color = const Color(0xFF050510); // Fog color
+    final Paint bgPaint = Paint()..color = const Color(0xFF050510);
     canvas.drawRect(bgRect, bgPaint);
+
+    camera.updateAspectRatio(size.width, size.height);
 
     if (game.status == GameStatus.menu) {
       _drawText(canvas, size, "NEON RUNNER", 40, Colors.cyan, 0, -50);
@@ -21,178 +28,220 @@ class GamePainter extends CustomPainter {
       return;
     }
 
-    // Horizon line usually at center y or slightly above
-    final double horizonY = size.height * 0.4;
-    final double centerX = size.width / 2;
+    // Matrices
+    final v.Matrix4 viewMatrix = camera.viewMatrix;
+    final v.Matrix4 projectionMatrix = camera.projectionMatrix;
+    final v.Matrix4 viewProjection = projectionMatrix * viewMatrix;
 
-    // Projection Function
-    Offset project(double x, double y, double z) {
-      // Camera params
-      // Camera at (0, 6, 14) looking at (0, 2, -10).
-      // Simplified: World moves relative to camera.
-      // Objects at z=0 are at player position.
-      // Objects at z < 0 are far away.
-      // Objects at z > 0 are behind/passing player.
+    // Viewport transformation
+    // Normalized Device Coordinates (NDC) are -1 to 1.
+    // Screen coords: x from 0 to width, y from 0 to height.
+    v.Vector2 viewportCenter = v.Vector2(size.width / 2, size.height / 2);
 
-      // We want perspective.
-      // Scale factor `s = f / (z_depth)`.
-      // Let's assume camera is at z_cam = 20 relative to player at 0.
-      // So distance = 20 - z.
-      // If z = -100, dist = 120. Scale small.
-      // If z = 0, dist = 20. Scale normal.
-      // If z = 15, dist = 5. Scale huge.
+    Offset? project(v.Vector3 worldPos) {
+       v.Vector4 pos4 = v.Vector4(worldPos.x, worldPos.y, worldPos.z, 1.0);
+       v.Vector4 clipPos = viewProjection * pos4;
 
-      const double fov = 300.0;
-      const double cameraDist = 20.0;
-      const double cameraHeight = 5.0; // Camera height offset
+       // Clip check (simple w check for behind camera)
+       if (clipPos.w <= 0) return null;
 
-      double dist = cameraDist - z;
-      if (dist < 1.0) dist = 1.0; // Clip near plane
+       // Perspective divide
+       double ndcX = clipPos.x / clipPos.w;
+       double ndcY = clipPos.y / clipPos.w;
 
-      double scale = fov / dist;
+       // Viewport transform
+       // In flutter, y is down. In NDC, y is up. So we invert Y.
+       double screenX = viewportCenter.x + (ndcX * viewportCenter.x);
+       double screenY = viewportCenter.y - (ndcY * viewportCenter.y);
 
-      double screenX = centerX + (x * scale);
-      // y is height from ground.
-      // Screen Y needs to map Ground(0) to some baseline, taking camera height into account.
-      // ground_y_screen = horizonY + (cameraHeight * scale) ?
-      // No, usually: y_screen = cy - (y - camY) * scale
-      // Let's say horizon is at vanishing point.
-      // Vanishing point is where z -> -infinity, so scale -> 0.
-      // y_screen = horizonY + ((y - cameraHeight) * scale) (if y is up)
-      // Since canvas Y is down, we invert.
-      double screenY = horizonY - ((y - cameraHeight) * scale);
-
-      return Offset(screenX, screenY);
+       return Offset(screenX, screenY);
     }
 
-    // Draw Ground Grid / Road
-    // We can draw lines for lanes.
+    // Draw Road Grid
     final Paint lanePaint = Paint()
-      ..color = Colors.cyan.withOpacity(0.5)
-      ..strokeWidth = 2;
+      ..color = Colors.cyan.withOpacity(0.3)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
 
-    for (int i = -1; i <= 2; i++) { // Lane lines at -1.5, -0.5, 0.5, 1.5 * laneWidth (borders)
-       // Actually config says laneWidth = 4. Lanes are -1, 0, 1.
-       // Borders are at -6, -2, 2, 6.
-       // Wait, center of lane 0 is 0. Width 4. So -2 to 2.
-       // Lane -1 is -4. Width 4. So -6 to -2.
-       // Lane 1 is 4. Width 4. So 2 to 6.
-       double lineX = (i * 4.0) - 2.0;
+    // Draw road segments
+    // Since segments are dynamic, we just draw long lines for lanes + horizontal markers from segments?
+    // Actually, let's draw the grid based on segments.
+    // Road segments are at -10 intervals.
 
-       Offset p1 = project(lineX, 0, -200); // Far
-       Offset p2 = project(lineX, 0, 20);   // Near
-       canvas.drawLine(p1, p2, lanePaint);
+    for (var segment in game.roadSegments) {
+       // Draw horizontal line for this segment?
+       // Road width is roughly 3 lanes * 4 width = 12. plus sidewalks. say 14.
+       double z = segment.position.z;
+
+       // Don't draw if behind camera too much
+       if (z > 20) continue;
+
+       Offset? pLeft = project(v.Vector3(-7, 0, z));
+       Offset? pRight = project(v.Vector3(7, 0, z));
+
+       if (pLeft != null && pRight != null) {
+          canvas.drawLine(pLeft, pRight, lanePaint);
+       }
     }
 
-    // Draw Objects
-    // Sort by Z (far to near) so near objects draw on top
-    // Obstacles have Z from -180 to 15.
-    // Player is at Z=0.
+    // Longitudinal lines
+    for (double x = -6; x <= 6; x += 4) {
+       // Draw a line from far to near
+       // We can approximate by taking points along the Z axis
+       List<Offset> points = [];
+       for (double z = -200; z <= 20; z += 10) {
+           Offset? p = project(v.Vector3(x, 0, z));
+           if (p != null) points.add(p);
+       }
+       if (points.length > 1) {
+           canvas.drawPoints(v.PointMode.polygon, points, lanePaint);
+       }
+    }
 
-    // Create a list of renderables to sort
-    List<RenderObject> renderables = [];
+
+    // Render Objects (Painter's Algorithm)
+    List<RenderItem> renderList = [];
 
     // Add Obstacles
     for (var obs in game.obstacles) {
-      renderables.add(RenderObject(type: 'obs', z: obs.z, obj: obs));
+        renderList.add(RenderItem(obs.position, obs));
     }
 
     // Add Player
-    // If Game Over, player might be invisible or exploded, but let's draw
-    if (game.status != GameStatus.gameOver) {
-       renderables.add(RenderObject(type: 'player', z: game.player.z, obj: game.player));
+    if (game.status != GameStatus.playing && game.status != GameStatus.gameOver) {
+       // Menu usually, but handled above.
+    } else {
+        renderList.add(RenderItem(game.player.position, game.player));
     }
 
-    // Sort: Smallest Z (most negative, furthest) first.
-    renderables.sort((a, b) => a.z.compareTo(b.z));
+    // Sort by Z (furthest first, i.e., most negative Z)
+    // Wait, in our coordinate system, camera is at Z=14, looking at -10.
+    // So smaller Z (more negative) is further away.
+    // We want to draw smallest Z first.
+    renderList.sort((a, b) => a.position.z.compareTo(b.position.z));
 
-    for (var r in renderables) {
-      if (r.type == 'player') {
-        _drawPlayer(canvas, game.player, project);
-      } else {
-        _drawObstacle(canvas, r.obj as Obstacle, project);
-      }
+    for (var item in renderList) {
+        if (item.object is Player) {
+            _drawPlayer(canvas, item.object as Player, project);
+        } else if (item.object is Obstacle) {
+            _drawObstacle(canvas, item.object as Obstacle, project);
+        }
     }
 
     // HUD
     _drawHUD(canvas, size);
 
     if (game.status == GameStatus.gameOver) {
-      // Draw Red Overlay
-      canvas.drawRect(bgRect, Paint()..color = Colors.red.withOpacity(0.3));
-      _drawText(canvas, size, "CRASHED", 50, Colors.red, 0, -50);
-      _drawText(canvas, size, "Score: ${game.score}", 30, Colors.white, 0, 20);
-      _drawText(canvas, size, "Tap to Retry", 20, Colors.white, 0, 70);
+       canvas.drawRect(bgRect, Paint()..color = Colors.red.withOpacity(0.3));
+       _drawText(canvas, size, "CRASHED", 50, Colors.red, 0, -50);
+       _drawText(canvas, size, "Score: ${game.score}", 30, Colors.white, 0, 20);
+       _drawText(canvas, size, "Tap to Retry", 20, Colors.white, 0, 70);
     }
   }
 
-  void _drawPlayer(Canvas canvas, Player p, Offset Function(double, double, double) project) {
-    // Player is a box/capsule.
-    // Dimensions roughly: width 1, height 1.
-    // p.x, p.y, p.z(0).
+  void _drawPlayer(Canvas canvas, Player player, Offset? Function(v.Vector3) project) {
+      // 3D Box for player
+      // Size roughly 1x1x1?
+      // Use player's position as center bottom or center?
+      // Player pos is center x, bottom y?, z.
+      // In models.dart: "y = 0.5 (fuselage) ... position.y = 1 (base)".
+      // Let's assume position is the pivot point.
 
-    // Base point
-    Offset base = project(p.x, p.y, p.z);
-
-    // Simple representation: Circle or Rect depending on roll
-    Paint paint = Paint()..color = Colors.white;
-    Paint accent = Paint()..color = Colors.cyan;
-
-    // Calculate scale at this Z
-    // We can estimate scale by projecting a point 1 unit up/right
-    Offset up = project(p.x, p.y + 1, p.z);
-    double h = (base.dy - up.dy).abs();
-    double w = h * 0.8;
-
-    if (p.isRolling) {
-       h = h * 0.5; // Squished
-    }
-
-    Rect playerRect = Rect.fromCenter(center: Offset(base.dx, base.dy - h/2), width: w, height: h);
-
-    canvas.drawRect(playerRect, paint);
-    canvas.drawRect(playerRect.deflate(w*0.2), accent);
+      _drawBox(canvas, project, player.position, v.Vector3(1, 0.5, 2), Colors.cyan, true);
+      // Wings/Fins? Simplified for now.
   }
 
-  void _drawObstacle(Canvas canvas, Obstacle obs, Offset Function(double, double, double) project) {
-    Offset base = project(obs.x, obs.y, obs.z);
-    Offset up = project(obs.x, obs.y + 2, obs.z); // Arbitrary height reference
-    double h = (base.dy - up.dy).abs();
-    double w = h;
+  void _drawObstacle(Canvas canvas, Obstacle obs, Offset? Function(v.Vector3) project) {
+      Color color = Colors.grey;
+      bool wireframe = false;
 
-    Paint p = Paint();
+      switch (obs.type) {
+          case CollisionType.solid: color = Colors.red; break;
+          case CollisionType.jump: color = Colors.orange; break;
+          case CollisionType.duck: color = Colors.yellow; break;
+          case CollisionType.coin: color = Colors.amber; wireframe = true; break;
+      }
 
-    switch (obs.type) {
-      case CollisionType.solid:
-        p.color = Colors.red;
-        // Tall block
-        Rect r = Rect.fromCenter(center: Offset(base.dx, base.dy - h/2), width: w, height: h);
-        canvas.drawRect(r, p);
-        break;
-      case CollisionType.jump:
-        p.color = Colors.orange;
-        // Low barrier
-        double bh = h * 0.3;
-        Rect r2 = Rect.fromCenter(center: Offset(base.dx, base.dy - bh/2), width: w * 1.5, height: bh);
-        canvas.drawRect(r2, p);
-        break;
-      case CollisionType.duck:
-        p.color = Colors.yellow;
-        // High barrier
-        double bh2 = h * 0.3;
-        // Float in air
-        Offset high = project(obs.x, obs.y + 2.0, obs.z); // Say it's at y=2
-        Rect r3 = Rect.fromCenter(center: high, width: w * 1.5, height: bh2);
-        canvas.drawRect(r3, p);
-        // Draw poles
-        canvas.drawLine(Offset(r3.left, r3.bottom), Offset(r3.left, base.dy), Paint()..color=Colors.grey..strokeWidth=2);
-        canvas.drawLine(Offset(r3.right, r3.bottom), Offset(r3.right, base.dy), Paint()..color=Colors.grey..strokeWidth=2);
-        break;
-      case CollisionType.coin:
-        p.color = Colors.amber;
-        canvas.drawCircle(Offset(base.dx, base.dy - h/2), w * 0.3, p);
-        break;
-    }
+      _drawBox(canvas, project, obs.position, obs.size, color, wireframe);
+  }
+
+  void _drawBox(Canvas canvas, Offset? Function(v.Vector3) project, v.Vector3 center, v.Vector3 size, Color color, bool wireframe) {
+      // Calculate 8 corners
+      double hw = size.x / 2;
+      double hh = size.y / 2;
+      double hd = size.z / 2;
+
+      List<v.Vector3> corners = [
+          v.Vector3(-hw, -hh, -hd), v.Vector3(hw, -hh, -hd),
+          v.Vector3(hw, hh, -hd), v.Vector3(-hw, hh, -hd),
+          v.Vector3(-hw, -hh, hd), v.Vector3(hw, -hh, hd),
+          v.Vector3(hw, hh, hd), v.Vector3(-hw, hh, hd),
+      ];
+
+      List<Offset?> projected = [];
+      for (var c in corners) {
+          projected.add(project(center + c));
+      }
+
+      // If any point is null (behind camera), we skip drawing this object properly or handle clipping.
+      // Simple culling: if all null, skip.
+      if (projected.every((p) => p == null)) return;
+
+      // For partial clipping, it's complex. We will skip if any is null for simplicity of this custom engine.
+      if (projected.any((p) => p == null)) return;
+
+      List<Offset> pts = projected.cast<Offset>();
+
+      Paint paint = Paint()
+        ..color = color
+        ..style = wireframe ? PaintingStyle.stroke : PaintingStyle.fill
+        ..strokeWidth = 2;
+
+      Paint strokePaint = Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1;
+
+      // Faces
+      // Front: 4,5,6,7
+      // Back: 0,1,2,3
+      // Left: 0,4,7,3
+      // Right: 1,5,6,2
+      // Top: 3,7,6,2
+      // Bottom: 0,4,5,1
+
+      List<List<int>> faces = [
+         [0, 1, 2, 3], // Back
+         [0, 4, 5, 1], // Bottom
+         [0, 4, 7, 3], // Left
+         [1, 5, 6, 2], // Right
+         [3, 7, 6, 2], // Top
+         [4, 5, 6, 7], // Front
+      ];
+
+      // Crude backface culling or just draw all if wireframe?
+      // For solid, we should draw back to front relative to camera, but we already sorted objects.
+      // For faces within an object, we can just draw all or check normal.
+      // Let's just draw all for now, maybe sorted by their center Z?
+      // Since objects are convex, drawing back faces then front faces works.
+      // But calculating that is hard.
+      // Let's just draw them.
+
+      for (var face in faces) {
+          Path path = Path();
+          path.moveTo(pts[face[0]].dx, pts[face[0]].dy);
+          path.lineTo(pts[face[1]].dx, pts[face[1]].dy);
+          path.lineTo(pts[face[2]].dx, pts[face[2]].dy);
+          path.lineTo(pts[face[3]].dx, pts[face[3]].dy);
+          path.close();
+
+          if (!wireframe) {
+             canvas.drawPath(path, paint);
+             canvas.drawPath(path, strokePaint);
+          } else {
+             canvas.drawPath(path, paint);
+          }
+      }
   }
 
   void _drawHUD(Canvas canvas, Size size) {
@@ -210,13 +259,12 @@ class GamePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return true; // Always repaint for game loop
+    return true;
   }
 }
 
-class RenderObject {
-  String type;
-  double z;
-  Object obj;
-  RenderObject({required this.type, required this.z, required this.obj});
+class RenderItem {
+  v.Vector3 position;
+  Object object;
+  RenderItem(this.position, this.object);
 }

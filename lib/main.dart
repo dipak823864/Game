@@ -28,10 +28,10 @@ class GamePage extends StatefulWidget {
   const GamePage({super.key});
 
   @override
-  State<GamePage> createState() => _GamePageState();
+  State<GamePage> createState() => GamePageState();
 }
 
-class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin {
+class GamePageState extends State<GamePage> with SingleTickerProviderStateMixin {
   late NeonRunnerGame game;
   late Ticker _ticker;
 

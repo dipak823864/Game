@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'package:vector_math/vector_math_64.dart';
 
 enum GameStatus { menu, playing, gameOver }
 enum CollisionType { solid, jump, duck, coin }
@@ -14,10 +15,9 @@ class GameConfig {
 }
 
 class Player {
-  double x = 0;
-  double y = GameConfig.playerBaseY;
-  double z = 0; // Player is stationary in Z relative to camera/world origin for collision logic usually, but here obstacles move relative to player.
-                // In the TS code, player is at 0,1,0. Obstacles move +Z.
+  Vector3 position = Vector3(0, GameConfig.playerBaseY, 0);
+  // Player is stationary in Z relative to camera/world origin for collision logic usually, but here obstacles move relative to player.
+  // In the TS code, player is at 0,1,0. Obstacles move +Z.
 
   int currentLane = 0; // -1, 0, 1
   double velocityY = 0;
@@ -51,16 +51,17 @@ class Player {
   void update() {
     // X Movement (Lerp)
     double targetX = currentLane * GameConfig.laneWidth;
-    x += (targetX - x) * 0.3; // Using the non-autopilot lerp factor from TS
-    if ((x - targetX).abs() < 0.05) x = targetX;
+    // Using simple lerp
+    position.x += (targetX - position.x) * 0.3;
+    if ((position.x - targetX).abs() < 0.05) position.x = targetX;
 
     // Y Movement (Jump)
     if (isJumping) {
-      y += velocityY;
+      position.y += velocityY;
       velocityY -= GameConfig.gravity;
 
-      if (y <= GameConfig.playerBaseY) {
-        y = GameConfig.playerBaseY;
+      if (position.y <= GameConfig.playerBaseY) {
+        position.y = GameConfig.playerBaseY;
         isJumping = false;
         velocityY = 0;
       }
@@ -77,32 +78,52 @@ class Player {
 }
 
 class Obstacle {
-  double x;
-  double y;
-  double z;
+  Vector3 position;
   CollisionType type;
   bool active = true;
   int lane;
 
+  // Dimensions for AABB
+  Vector3 size;
+
   Obstacle({
-    required this.x,
-    required this.y,
-    required this.z,
+    required double x,
+    required double y,
+    required double z,
     required this.type,
     required this.lane,
-  });
+    Vector3? size,
+  }) : position = Vector3(x, y, z),
+       size = size ?? _getSizeForType(type);
+
+  static Vector3 _getSizeForType(CollisionType type) {
+    switch (type) {
+      case CollisionType.coin:
+        return Vector3(1.0, 1.0, 1.0);
+      case CollisionType.solid:
+         return Vector3(3.6, 4.0, 3.6);
+      case CollisionType.jump:
+         return Vector3(3.5, 1.5, 0.5); // Approximate
+      case CollisionType.duck:
+         return Vector3(3.8, 1.0, 1.0);
+    }
+  }
+}
+
+class RoadSegment {
+  Vector3 position;
+  RoadSegment(double z) : position = Vector3(0, 0, z);
 }
 
 class NeonRunnerGame {
   GameStatus status = GameStatus.menu;
   Player player = Player();
   List<Obstacle> obstacles = [];
+  List<RoadSegment> roadSegments = [];
   double gameSpeed = GameConfig.startSpeed;
   double distanceTraveled = 0;
   int score = 0;
   int lastSafeLane = 0;
-
-  // Callback for score/gameover if needed, but we can just poll the state
 
   void start() {
     status = GameStatus.playing;
@@ -111,11 +132,13 @@ class NeonRunnerGame {
     gameSpeed = GameConfig.startSpeed;
     player = Player();
     obstacles.clear();
+    roadSegments.clear();
     lastSafeLane = 0;
 
-    // Initial spawn? The TS code spawns continuously.
-    // "spawnZ = -180".
-    // TS: spawnObstacleRow(spawnZ) if lastObs > (spawnZ + minGap)
+    // Init road
+    for (int i = 0; i < 25; i++) {
+        roadSegments.add(RoadSegment(-i * 10.0));
+    }
   }
 
   void update() {
@@ -129,28 +152,39 @@ class NeonRunnerGame {
     // Update Player
     player.update();
 
+    // Update Road
+    for (var segment in roadSegments) {
+        segment.position.z += gameSpeed;
+        if (segment.position.z > 15) {
+            segment.position.z -= 250;
+        }
+    }
+
     // Update Obstacles
     for (int i = obstacles.length - 1; i >= 0; i--) {
       Obstacle obs = obstacles[i];
-      obs.z += gameSpeed; // Moving towards positive Z (towards camera/player)
+      obs.position.z += gameSpeed; // Moving towards positive Z (towards camera/player)
 
       // Collision Detection
       if (obs.active) {
-        // Player is at x (dynamic), z=0.
-        // Obstacle is at obs.x, obs.z.
+        // Player is at position (dynamic), z=0 (mostly).
+        // Obstacle is at obs.position.
 
-        double dx = (obs.x - player.x).abs();
-        double dz = obs.z; // since player.z is 0
+        double dx = (obs.position.x - player.position.x).abs();
+        double dz = obs.position.z; // since player.z is 0
+
+        // Using simple distance check as requested in Step 1, but user asked for AABB later in tests.
+        // For now, keeping logic similar to TS port for gameplay consistency, upgrading to Vector3 access.
 
         // TS Logic: if (dz > -1.0 && dz < 1.0 && dx < 1.2)
         if (dz > -1.0 && dz < 1.0 && dx < 1.2) {
           if (obs.type == CollisionType.coin) {
              score += 500;
-             obs.active = false; // "Collected"
-             // visual effect skipped for logic
+             obs.active = false;
           } else {
              bool safe = false;
-             if (obs.type == CollisionType.jump && player.y > 1.2) {
+             // Logic based on TS
+             if (obs.type == CollisionType.jump && player.position.y > 1.2) {
                safe = true;
              } else if (obs.type == CollisionType.duck && player.isRolling) {
                safe = true;
@@ -164,7 +198,7 @@ class NeonRunnerGame {
       }
 
       // Remove if passed camera
-      if (obs.z > 15) {
+      if (obs.position.z > 15) {
         obstacles.removeAt(i);
       }
     }
@@ -173,22 +207,12 @@ class NeonRunnerGame {
     const double spawnZ = -180;
     double minGap = 50 + (gameSpeed * 30);
 
-    // Check if we need to spawn
-    // If no obstacles, or last obstacle is closer than (spawnZ + minGap)
-    // Note: Obstacles are at negative Z moving to positive Z.
-    // The "last obstacle" is the one most negative (furthest away).
-    // In TS: obstacles.push() adds to end. So lastObs is the newest one spawned.
-    // If lastObs.z > (spawnZ + minGap), we spawn new row at spawnZ.
-    // Since spawnZ is -180, and obstacles move +, lastObs.z increases.
-    // Example: spawn at -180. Gap 60. Wait until lastObs reaches -120. Then spawn new at -180.
-
-    if (obstacles.isEmpty || obstacles.last.z > (spawnZ + minGap)) {
+    if (obstacles.isEmpty || obstacles.last.position.z > (spawnZ + minGap)) {
       spawnObstacleRow(spawnZ);
     }
   }
 
   void spawnObstacleRow(double z) {
-    // Determine safe lane
     List<int> possibleLanes = [lastSafeLane];
     if (lastSafeLane > -1) possibleLanes.add(lastSafeLane - 1);
     if (lastSafeLane < 1) possibleLanes.add(lastSafeLane + 1);
@@ -231,10 +255,9 @@ class NeonRunnerGame {
       type = CollisionType.duck;
     }
 
-    // In TS, they just create the group. Here we need the object logic.
     obstacles.add(Obstacle(
       x: x,
-      y: 0, // Base Y usually
+      y: (type == CollisionType.jump) ? 0.25 : (type == CollisionType.duck ? 3.0 : 2.0), // Approximate centers based on TS
       z: z,
       type: type,
       lane: laneIdx,
