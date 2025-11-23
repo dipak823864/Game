@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'models.dart';
 import 'game_painter.dart';
 
@@ -30,7 +29,6 @@ class NeonRunnerPage extends StatefulWidget {
 
 class NeonRunnerPageState extends State<NeonRunnerPage> with SingleTickerProviderStateMixin {
   late NeonRunnerGame game;
-  late Ticker _ticker;
   late AnimationController _repaintController;
 
   @override
@@ -38,21 +36,24 @@ class NeonRunnerPageState extends State<NeonRunnerPage> with SingleTickerProvide
     super.initState();
     game = NeonRunnerGame();
 
+    // Use AnimationController to drive the game loop.
+    // It provides the Ticker and handles the repaint notifications.
     _repaintController = AnimationController(
       vsync: this,
-      duration: const Duration(days: 1), // Infinite
-    )..repeat();
+      duration: const Duration(days: 1), // Infinite duration effectively
+    );
 
-    _ticker = createTicker((elapsed) {
+    _repaintController.addListener(() {
+      // Update game logic every frame
       game.update();
-      // No setState here, we use AnimatedBuilder or RepaintBoundary with CustomPainter
+      // No need for setState() because CustomPainter listens to _repaintController (passed as repaint arg)
     });
-    _ticker.start();
+
+    _repaintController.repeat();
   }
 
   @override
   void dispose() {
-    _ticker.dispose();
     _repaintController.dispose();
     super.dispose();
   }

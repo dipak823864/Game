@@ -201,7 +201,7 @@ class GamePainter extends CustomPainter {
        Paint coinPaint = Paint()..color = Colors.yellow;
        double r = 0.5 * scale * 30; // 0.5 radius
        // Spin effect
-       double widthScale = math.cos(obs.rotationY).abs();
+       double widthScale = math.abs(math.cos(obs.rotationY));
 
        canvas.drawOval(
          Rect.fromCenter(center: pos, width: r * widthScale * 2, height: r * 2),
