@@ -1,0 +1,28 @@
+{
+  "layers": [
+    {
+      "id": "player",
+      "type": "rect",
+      "position": { "dx": 150.0, "dy": 500.0 },
+      "size": { "width": 50.0, "height": 50.0 },
+      "color": 4280391411,
+      "velocity": { "dx": 0.0, "dy": 0.0 }
+    },
+    {
+      "id": "enemy1",
+      "type": "circle",
+      "position": { "dx": 50.0, "dy": 0.0 },
+      "radius": 20.0,
+      "color": 4294198070,
+      "velocity": { "dx": 0.0, "dy": 2.0 }
+    },
+    {
+      "id": "enemy2",
+      "type": "rect",
+      "position": { "dx": 250.0, "dy": -100.0 },
+      "size": { "width": 50.0, "height": 50.0 },
+      "color": 4283215696,
+      "velocity": { "dx": 0.0, "dy": 4.0 }
+    }
+  ]
+}
