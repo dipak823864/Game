@@ -31,7 +31,7 @@ jobs:
 
       - name: Build Web App
         # આ કમાન્ડથી build/web ફોલ્ડર બનશે
-        run: flutter build web --release --base-href "/my-game/"
+        run: flutter build web --release --base-href "/Game/"
 
       # --- સૌથી મહત્વનું સ્ટેપ (આનાથી જ સાઈટ દેખાશે) ---
       - name: Fix for GitHub Pages (Disable Jekyll)
