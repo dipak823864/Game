@@ -1,74 +1,79 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart'; // For kDoubleTapTimeout
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_editor/main.dart';
-import 'package:my_editor/editor_canvas.dart';
 import 'package:my_editor/models.dart';
+import 'package:my_editor/game_painter.dart';
 
 void main() {
-  testWidgets('Editor Core Interaction Test', (WidgetTester tester) async {
-    // 1. Load the MyApp
+  testWidgets('Neon Runner Game Logic Test', (WidgetTester tester) async {
+    // 1. Pump the game widget
     await tester.pumpWidget(const MyApp());
-    await tester.pump(); // Frame
-
-    // 2. Find the CustomPaint
-    final gestureDetectorFinder = find.descendant(
-      of: find.byType(EditorCanvas),
-      matching: find.byType(GestureDetector),
-    );
-    expect(gestureDetectorFinder, findsOneWidget);
-
-    final customPaintFinder = find.descendant(
-      of: gestureDetectorFinder,
-      matching: find.byType(CustomPaint),
-    );
-    expect(customPaintFinder, findsOneWidget);
-
-    // 3. Access the state
-    final editorPageFinder = find.byType(EditorPage);
-    expect(editorPageFinder, findsOneWidget);
-    final EditorPageState editorPageState = tester.state(editorPageFinder);
-    final composition = editorPageState.composition;
-
-    // Verify initial state
-    expect(composition.layers.length, 2);
-    final textLayer1 = composition.layers[0] as TextLayer;
-
-    // 4. Simulate a Tap to select the layer
-    await tester.tap(customPaintFinder);
-    await tester.pump(); // Process the tap event
-
-    // Because onDoubleTapDown is present, GestureDetector waits to ensure it's not a double tap.
-    await tester.pump(kDoubleTapTimeout);
-
-    // Verify that tapping on a layer selects it
-    expect(
-      textLayer1.isSelected,
-      true,
-      reason: "Layer should be selected after tap",
-    );
-
-    // 5. Simulate a Drag
-    // Use tester.drag which is higher level and reliable
-    await tester.drag(customPaintFinder, const Offset(50, 50));
     await tester.pump();
 
-    // Pump enough time for any pending double-tap timers from the drag start to expire
-    await tester.pump(kDoubleTapTimeout);
+    final pageFinder = find.byType(NeonRunnerPage);
+    expect(pageFinder, findsOneWidget);
 
-    // 6. Verify via logic/math that the layer's position has indeed updated
-    // Initial position was Offset.zero
-    // We expect the position to have changed significantly in the direction of drag.
-    // Exact pixel value depends on scaling, so we check it's > 0.
-    expect(
-      textLayer1.position.dx,
-      greaterThan(1.0),
-      reason: "Layer X position should update after drag",
-    );
-    expect(
-      textLayer1.position.dy,
-      greaterThan(1.0),
-      reason: "Layer Y position should update after drag",
-    );
+    final NeonRunnerPageState state = tester.state(pageFinder);
+    final NeonRunnerGame game = state.game;
+
+    // Initial State
+    expect(game.state, GameState.MENU);
+
+    // 2. Start Game via Tap
+    await tester.tap(find.byType(GestureDetector));
+    await tester.pump();
+
+    expect(game.state, GameState.PLAYING);
+    expect(game.obstacles.length, greaterThan(0)); // Obstacles should spawn
+
+    // 3. Simulate Time Passing (Game Loop)
+    // We cannot easily pump frames for Ticker in test environment without manual control,
+    // but we can call game.update() manually to verify logic.
+
+    double initialZ = game.obstacles[0].z;
+    game.update();
+    expect(game.obstacles[0].z, greaterThan(initialZ)); // Objects move +Z
+
+    // 4. Test Controls
+    // Move Right
+    game.moveRight();
+    expect(game.player.lane, 1);
+
+    // Move Left
+    game.moveLeft();
+    expect(game.player.lane, 0);
+
+    // Jump
+    game.jump();
+    expect(game.player.isJumping, true);
+    expect(game.player.velocityY, GameConfig.jumpForce);
+
+    // Simulate Gravity
+    double initialY = game.player.y;
+    game.update();
+    expect(game.player.y, greaterThan(initialY)); // Moved up
+
+    // 5. Test Score Accumulation
+    double initialScore = game.score;
+    // Simulate many updates
+    for(int i=0; i<100; i++) {
+      game.update();
+    }
+    expect(game.score, greaterThan(initialScore));
+
+    // 6. Test Collision (Simulated)
+    // Force spawn an obstacle at player position
+    game.player.reset(); // Reset player
+    game.obstacles.clear();
+    game.obstacles.add(Obstacle(
+      x: 0,
+      y: 0,
+      z: 0,
+      type: CollisionType.SOLID,
+      lane: 0
+    ));
+
+    game.update(); // Should detect collision
+    expect(game.state, GameState.GAME_OVER);
   });
 }

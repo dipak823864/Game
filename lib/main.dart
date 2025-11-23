@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'models.dart';
-import 'editor_canvas.dart';
+import 'game_painter.dart';
 
 void main() {
   runApp(const MyApp());
@@ -12,61 +13,98 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Pro Editor',
+      title: 'Neon Runner',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
-      home: const EditorPage(),
+      home: const NeonRunnerPage(),
     );
   }
 }
 
-class EditorPage extends StatefulWidget {
-  const EditorPage({super.key});
+class NeonRunnerPage extends StatefulWidget {
+  const NeonRunnerPage({super.key});
 
   @override
-  State<EditorPage> createState() => EditorPageState();
+  State<NeonRunnerPage> createState() => NeonRunnerPageState();
 }
 
-@visibleForTesting
-class EditorPageState extends State<EditorPage> {
-  late EditorComposition composition;
+class NeonRunnerPageState extends State<NeonRunnerPage> with SingleTickerProviderStateMixin {
+  late NeonRunnerGame game;
+  late Ticker _ticker;
+  late AnimationController _repaintController;
 
   @override
   void initState() {
     super.initState();
-    composition = EditorComposition(
-      dimension: const Size(1080, 1080),
-      backgroundColor: Colors.white,
-      layers: [
-        TextLayer(
-          id: '1',
-          text: 'Smart Text Editor',
-          position: Offset.zero,
-          style: const TextStyle(
-            fontSize: 50,
-            color: Colors.black,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        TextLayer(
-          id: '2',
-          text: 'Double Tap Me!',
-          position: const Offset(0, 200),
-          rotation: -0.1,
-          style: const TextStyle(fontSize: 40, color: Colors.purple),
-        ),
-      ],
-    );
+    game = NeonRunnerGame();
+
+    _repaintController = AnimationController(
+      vsync: this,
+      duration: const Duration(days: 1), // Infinite
+    )..repeat();
+
+    _ticker = createTicker((elapsed) {
+      game.update();
+      // No setState here, we use AnimatedBuilder or RepaintBoundary with CustomPainter
+    });
+    _ticker.start();
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _repaintController.dispose();
+    super.dispose();
+  }
+
+  // --- Input Handling ---
+
+  void _handleTap() {
+    if (game.state == GameState.MENU || game.state == GameState.GAME_OVER) {
+      game.start();
+    } else {
+      game.jump();
+    }
+  }
+
+  void _handleSwipe(DragEndDetails details) {
+    if (game.state != GameState.PLAYING) return;
+
+    if (details.primaryVelocity != null) {
+      // Horizontal
+      if (details.primaryVelocity!.abs() > details.velocity.pixelsPerSecond.dy.abs()) {
+          if (details.primaryVelocity! > 0) {
+            game.moveRight();
+          } else {
+            game.moveLeft();
+          }
+      } else {
+        // Vertical
+        if (details.primaryVelocity! < 0) {
+           game.jump();
+        } else {
+           game.roll();
+        }
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Advanced Editor Engine"),
-        backgroundColor: Colors.black,
+      backgroundColor: Colors.black,
+      body: GestureDetector(
+        onTap: _handleTap,
+        onPanEnd: _handleSwipe, // Handles swipe
+        child: SizedBox.expand(
+          child: CustomPaint(
+            painter: GamePainter(
+              game: game,
+              repaint: _repaintController
+            ),
+          ),
+        ),
       ),
-      body: EditorCanvas(composition: composition),
     );
   }
 }
