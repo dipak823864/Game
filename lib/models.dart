@@ -1,180 +1,247 @@
-import 'package:flutter/material.dart';
-import 'dart:ui' as ui;
+import 'dart:math';
 
-// Constants
-const double handleRadius = 9.0;
-const double rotationHandleDistance = 30.0;
+enum GameStatus { menu, playing, gameOver }
+enum CollisionType { solid, jump, duck, coin }
 
-class EditorComposition {
-  Size dimension;
-  Color backgroundColor;
-  List<BaseLayer> layers;
-
-  EditorComposition({
-    required this.dimension,
-    this.backgroundColor = Colors.white,
-    List<BaseLayer>? layers,
-  }) : layers = layers ?? [];
+class GameConfig {
+  static const double laneWidth = 4.0;
+  static const double startSpeed = 0.6;
+  static const double maxSpeed = 2.8;
+  static const double speedIncrement = 0.0002;
+  static const double jumpForce = 0.38;
+  static const double gravity = 0.020;
+  static const double playerBaseY = 1.0;
 }
 
-abstract class BaseLayer {
-  String id;
-  Offset position;
-  double rotation;
-  double scale;
-  bool isSelected;
-  bool isEditing;
+class Player {
+  double x = 0;
+  double y = GameConfig.playerBaseY;
+  double z = 0; // Player is stationary in Z relative to camera/world origin for collision logic usually, but here obstacles move relative to player.
+                // In the TS code, player is at 0,1,0. Obstacles move +Z.
 
-  BaseLayer({
-    required this.id,
-    this.position = Offset.zero,
-    this.rotation = 0.0,
-    this.scale = 1.0,
-    this.isSelected = false,
-    this.isEditing = false,
-  });
+  int currentLane = 0; // -1, 0, 1
+  double velocityY = 0;
+  bool isJumping = false;
+  bool isRolling = false;
+  int rollTimer = 0;
 
-  Matrix4 get matrix {
-    final mat = Matrix4.identity();
-    mat.setTranslationRaw(position.dx, position.dy, 0);
-    mat.rotateZ(rotation);
-    mat.scale(scale, scale, 1.0);
-    return mat;
+  void jump() {
+    if (!isJumping) {
+      isJumping = true;
+      velocityY = GameConfig.jumpForce;
+      isRolling = false;
+    }
   }
 
-  void paint(Canvas canvas, Size size);
-  Size get size;
-}
+  void roll() {
+    if (!isJumping && !isRolling) {
+      isRolling = true;
+      rollTimer = 40;
+    }
+  }
 
-class TextLayer extends BaseLayer {
-  String text;
-  TextStyle style;
-  Size _cachedSize = Size.zero;
+  void moveLeft() {
+    if (currentLane > -1) currentLane--;
+  }
 
-  TextSelection selection;
-  bool showCursor;
+  void moveRight() {
+    if (currentLane < 1) currentLane++;
+  }
 
-  TextLayer({
-    required super.id,
-    required this.text,
-    super.position,
-    super.rotation,
-    super.scale,
-    this.style = const TextStyle(fontSize: 30, color: Colors.black),
-    this.selection = const TextSelection.collapsed(offset: 0),
-    this.showCursor = false,
-  });
+  void update() {
+    // X Movement (Lerp)
+    double targetX = currentLane * GameConfig.laneWidth;
+    x += (targetX - x) * 0.3; // Using the non-autopilot lerp factor from TS
+    if ((x - targetX).abs() < 0.05) x = targetX;
 
-  @override
-  Size get size => _cachedSize;
+    // Y Movement (Jump)
+    if (isJumping) {
+      y += velocityY;
+      velocityY -= GameConfig.gravity;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    final textPainter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-    );
-    textPainter.layout();
-    _cachedSize = textPainter.size;
-
-    final paintOffset = Offset(-_cachedSize.width / 2, -_cachedSize.height / 2);
-
-    // 1. Draw Selection Highlights
-    if (isEditing) {
-      final selectionColor = Colors.blue.withValues(alpha: 0.3);
-      final safeSelection = TextSelection(
-        baseOffset: selection.baseOffset.clamp(0, text.length),
-        extentOffset: selection.extentOffset.clamp(0, text.length),
-      );
-
-      if (!safeSelection.isCollapsed) {
-        final boxes = textPainter.getBoxesForSelection(safeSelection);
-        for (var box in boxes) {
-          final rect = box.toRect().shift(paintOffset);
-          canvas.drawRect(rect, Paint()..color = selectionColor);
+      if (y <= GameConfig.playerBaseY) {
+        y = GameConfig.playerBaseY;
+        isJumping = false;
+        velocityY = 0;
+      }
+    } else {
+      // Roll Logic
+      if (isRolling) {
+        rollTimer--;
+        if (rollTimer <= 0) {
+          isRolling = false;
         }
       }
     }
+  }
+}
 
-    // 2. Draw Text
-    textPainter.paint(canvas, paintOffset);
+class Obstacle {
+  double x;
+  double y;
+  double z;
+  CollisionType type;
+  bool active = true;
+  int lane;
 
-    // 3. Draw Cursor
-    if (isEditing && showCursor && selection.isCollapsed) {
-      final safeOffset = selection.baseOffset.clamp(0, text.length);
-      final caretOffset = textPainter.getOffsetForCaret(
-        TextPosition(offset: safeOffset),
-        Rect.zero,
-      );
-      final cursorHeight = text.isEmpty
-          ? (style.fontSize ?? 30)
-          : textPainter.preferredLineHeight;
+  Obstacle({
+    required this.x,
+    required this.y,
+    required this.z,
+    required this.type,
+    required this.lane,
+  });
+}
 
-      final p1 = paintOffset + caretOffset;
-      final p2 = p1 + Offset(0, cursorHeight);
+class NeonRunnerGame {
+  GameStatus status = GameStatus.menu;
+  Player player = Player();
+  List<Obstacle> obstacles = [];
+  double gameSpeed = GameConfig.startSpeed;
+  double distanceTraveled = 0;
+  int score = 0;
+  int lastSafeLane = 0;
 
-      canvas.drawLine(
-        p1,
-        p2,
-        Paint()
-          ..color = Colors.blueAccent
-          ..strokeWidth = 2,
-      );
-    }
+  // Callback for score/gameover if needed, but we can just poll the state
 
-    // 4. Draw UI Border & Handles
-    if (isSelected) {
-      final rect = paintOffset & _cachedSize;
+  void start() {
+    status = GameStatus.playing;
+    score = 0;
+    distanceTraveled = 0;
+    gameSpeed = GameConfig.startSpeed;
+    player = Player();
+    obstacles.clear();
+    lastSafeLane = 0;
 
-      final borderPaint = Paint()
-        ..color = Colors.blueAccent
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5 / scale;
+    // Initial spawn? The TS code spawns continuously.
+    // "spawnZ = -180".
+    // TS: spawnObstacleRow(spawnZ) if lastObs > (spawnZ + minGap)
+  }
 
-      _drawDashedRect(canvas, rect, borderPaint);
+  void update() {
+    if (status != GameStatus.playing) return;
 
-      final handleFill = Paint()..color = Colors.white;
-      final handleStroke = Paint()
-        ..color = Colors.blueAccent
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2 / scale;
-      final radius = handleRadius / scale;
+    // Update Speed and Score
+    gameSpeed = min(GameConfig.maxSpeed, gameSpeed + GameConfig.speedIncrement);
+    distanceTraveled += gameSpeed;
+    score = (distanceTraveled * 10).floor();
 
-      final corners = [
-        rect.topLeft,
-        rect.topRight,
-        rect.bottomLeft,
-        rect.bottomRight,
-      ];
-      for (var point in corners) {
-        canvas.drawCircle(point, radius, handleFill);
-        canvas.drawCircle(point, radius, handleStroke);
+    // Update Player
+    player.update();
+
+    // Update Obstacles
+    for (int i = obstacles.length - 1; i >= 0; i--) {
+      Obstacle obs = obstacles[i];
+      obs.z += gameSpeed; // Moving towards positive Z (towards camera/player)
+
+      // Collision Detection
+      if (obs.active) {
+        // Player is at x (dynamic), z=0.
+        // Obstacle is at obs.x, obs.z.
+
+        double dx = (obs.x - player.x).abs();
+        double dz = obs.z; // since player.z is 0
+
+        // TS Logic: if (dz > -1.0 && dz < 1.0 && dx < 1.2)
+        if (dz > -1.0 && dz < 1.0 && dx < 1.2) {
+          if (obs.type == CollisionType.coin) {
+             score += 500;
+             obs.active = false; // "Collected"
+             // visual effect skipped for logic
+          } else {
+             bool safe = false;
+             if (obs.type == CollisionType.jump && player.y > 1.2) {
+               safe = true;
+             } else if (obs.type == CollisionType.duck && player.isRolling) {
+               safe = true;
+             }
+
+             if (!safe) {
+               gameOver();
+             }
+          }
+        }
       }
 
-      final topCenter = rect.topCenter;
-      final rotPos = Offset(
-        topCenter.dx,
-        topCenter.dy - (rotationHandleDistance / scale),
-      );
-      canvas.drawLine(topCenter, rotPos, borderPaint);
-      canvas.drawCircle(rotPos, radius, handleFill);
-      canvas.drawCircle(rotPos, radius, handleStroke);
+      // Remove if passed camera
+      if (obs.z > 15) {
+        obstacles.removeAt(i);
+      }
+    }
+
+    // Spawning Logic
+    const double spawnZ = -180;
+    double minGap = 50 + (gameSpeed * 30);
+
+    // Check if we need to spawn
+    // If no obstacles, or last obstacle is closer than (spawnZ + minGap)
+    // Note: Obstacles are at negative Z moving to positive Z.
+    // The "last obstacle" is the one most negative (furthest away).
+    // In TS: obstacles.push() adds to end. So lastObs is the newest one spawned.
+    // If lastObs.z > (spawnZ + minGap), we spawn new row at spawnZ.
+    // Since spawnZ is -180, and obstacles move +, lastObs.z increases.
+    // Example: spawn at -180. Gap 60. Wait until lastObs reaches -120. Then spawn new at -180.
+
+    if (obstacles.isEmpty || obstacles.last.z > (spawnZ + minGap)) {
+      spawnObstacleRow(spawnZ);
     }
   }
 
-  void _drawDashedRect(Canvas canvas, Rect rect, Paint paint) {
-    final path = Path()..addRect(rect);
-    final dashWidth = 10.0 / scale;
-    final dashSpace = 5.0 / scale;
-    for (final metric in path.computeMetrics()) {
-      var distance = 0.0;
-      while (distance < metric.length) {
-        canvas.drawPath(
-          metric.extractPath(distance, distance + dashWidth),
-          paint,
-        );
-        distance += dashWidth + dashSpace;
+  void spawnObstacleRow(double z) {
+    // Determine safe lane
+    List<int> possibleLanes = [lastSafeLane];
+    if (lastSafeLane > -1) possibleLanes.add(lastSafeLane - 1);
+    if (lastSafeLane < 1) possibleLanes.add(lastSafeLane + 1);
+
+    int safeLaneIdx = possibleLanes[Random().nextInt(possibleLanes.length)];
+    lastSafeLane = safeLaneIdx;
+
+    for (int laneIdx = -1; laneIdx <= 1; laneIdx++) {
+      double x = laneIdx * GameConfig.laneWidth;
+
+      if (laneIdx == safeLaneIdx) {
+        if (Random().nextDouble() < 0.3) {
+          spawnCoin(x, z, laneIdx);
+        }
+      } else {
+        if (Random().nextDouble() < 0.8) {
+          spawnObstacle(x, z, laneIdx);
+        }
       }
     }
+  }
+
+  void spawnCoin(double x, double z, int laneIdx) {
+    obstacles.add(Obstacle(
+      x: x,
+      y: 1.5,
+      z: z,
+      type: CollisionType.coin,
+      lane: laneIdx,
+    ));
+  }
+
+  void spawnObstacle(double x, double z, int laneIdx) {
+    double r = Random().nextDouble();
+    CollisionType type = CollisionType.solid;
+
+    if (r < 0.25) {
+      type = CollisionType.jump;
+    } else if (r < 0.5) {
+      type = CollisionType.duck;
+    }
+
+    // In TS, they just create the group. Here we need the object logic.
+    obstacles.add(Obstacle(
+      x: x,
+      y: 0, // Base Y usually
+      z: z,
+      type: type,
+      lane: laneIdx,
+    ));
+  }
+
+  void gameOver() {
+    status = GameStatus.gameOver;
   }
 }
