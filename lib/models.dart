@@ -1,180 +1,138 @@
-import 'package:flutter/material.dart';
-import 'dart:ui' as ui;
+import 'package:vector_math/vector_math_64.dart';
 
-// Constants
-const double handleRadius = 9.0;
-const double rotationHandleDistance = 30.0;
+enum GameStatus { menu, playing, paused, settings, gameOver }
+enum CollisionType { solid, jump, duck, coin, none }
+enum AIAction { run, jump, duck, dodge, scanning, waiting }
+enum AIHeuristic { survival, coins }
 
-class EditorComposition {
-  Size dimension;
-  Color backgroundColor;
-  List<BaseLayer> layers;
-
-  EditorComposition({
-    required this.dimension,
-    this.backgroundColor = Colors.white,
-    List<BaseLayer>? layers,
-  }) : layers = layers ?? [];
+class GameConfig {
+  static const double laneWidth = 4.0;
+  static const double startSpeed = 0.6;
+  static const double maxSpeed = 2.8;
+  static const double speedIncrement = 0.0002;
+  static const double jumpForce = 0.38;
+  static const double gravity = 0.020;
+  static const double visibilityRange = 350.0;
+  static const double playerBaseY = 1.0;
 }
 
-abstract class BaseLayer {
-  String id;
-  Offset position;
-  double rotation;
-  double scale;
-  bool isSelected;
-  bool isEditing;
+class Player {
+  Vector3 position = Vector3(0, GameConfig.playerBaseY, 0);
+  Vector3 size = Vector3(1, 1, 1);
+  double rotationZ = 0;
+  double rotationX = 0;
 
-  BaseLayer({
-    required this.id,
-    this.position = Offset.zero,
-    this.rotation = 0.0,
-    this.scale = 1.0,
-    this.isSelected = false,
-    this.isEditing = false,
-  });
+  int currentLane = 0;
+  double velocityY = 0;
+  bool isJumping = false;
+  bool isRolling = false;
+  int rollTimer = 0;
 
-  Matrix4 get matrix {
-    final mat = Matrix4.identity();
-    mat.setTranslationRaw(position.dx, position.dy, 0);
-    mat.rotateZ(rotation);
-    mat.scale(scale, scale, 1.0);
-    return mat;
+  Aabb3 get bounds => Aabb3.minMax(
+    position - (size * 0.5),
+    position + (size * 0.5)
+  );
+
+  void jump() {
+    if (!isJumping) {
+      isJumping = true;
+      velocityY = GameConfig.jumpForce;
+      isRolling = false;
+    }
   }
 
-  void paint(Canvas canvas, Size size);
-  Size get size;
+  void roll() {
+    if (!isJumping && !isRolling) {
+      isRolling = true;
+      rollTimer = 40;
+    }
+  }
 }
 
-class TextLayer extends BaseLayer {
-  String text;
-  TextStyle style;
-  Size _cachedSize = Size.zero;
+class Obstacle {
+  Vector3 position;
+  Vector3 size;
+  CollisionType type;
+  bool active = true;
+  int lane;
 
-  TextSelection selection;
-  bool showCursor;
-
-  TextLayer({
-    required super.id,
-    required this.text,
-    super.position,
-    super.rotation,
-    super.scale,
-    this.style = const TextStyle(fontSize: 30, color: Colors.black),
-    this.selection = const TextSelection.collapsed(offset: 0),
-    this.showCursor = false,
+  Obstacle({
+    required this.position,
+    required this.size,
+    required this.type,
+    required this.lane,
   });
 
-  @override
-  Size get size => _cachedSize;
+  Aabb3 get bounds => Aabb3.minMax(
+    position - (size * 0.5),
+    position + (size * 0.5)
+  );
+}
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    final textPainter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-    );
-    textPainter.layout();
-    _cachedSize = textPainter.size;
+class AIState {
+  bool enabled;
+  int currentLane;
+  int targetLane;
+  AIAction action;
+  double confidence;
+  double nearestThreatDist;
+  List<double> laneScores;
 
-    final paintOffset = Offset(-_cachedSize.width / 2, -_cachedSize.height / 2);
+  AIState({
+    this.enabled = false,
+    this.currentLane = 0,
+    this.targetLane = 0,
+    this.action = AIAction.scanning,
+    this.confidence = 0,
+    this.nearestThreatDist = 0,
+    this.laneScores = const [0, 0, 0],
+  });
+}
 
-    // 1. Draw Selection Highlights
-    if (isEditing) {
-      final selectionColor = Colors.blue.withValues(alpha: 0.3);
-      final safeSelection = TextSelection(
-        baseOffset: selection.baseOffset.clamp(0, text.length),
-        extentOffset: selection.extentOffset.clamp(0, text.length),
-      );
+class AISettings {
+  double riskTolerance;
+  AIHeuristic heuristic;
+  bool debugViz;
+  bool showHUDButton;
 
-      if (!safeSelection.isCollapsed) {
-        final boxes = textPainter.getBoxesForSelection(safeSelection);
-        for (var box in boxes) {
-          final rect = box.toRect().shift(paintOffset);
-          canvas.drawRect(rect, Paint()..color = selectionColor);
-        }
-      }
-    }
+  AISettings({
+    this.riskTolerance = 0.5,
+    this.heuristic = AIHeuristic.survival,
+    this.debugViz = false,
+    this.showHUDButton = true,
+  });
+}
 
-    // 2. Draw Text
-    textPainter.paint(canvas, paintOffset);
+class AudioSettings {
+  double musicVolume;
+  double engineVolume;
+  double sfxVolume;
 
-    // 3. Draw Cursor
-    if (isEditing && showCursor && selection.isCollapsed) {
-      final safeOffset = selection.baseOffset.clamp(0, text.length);
-      final caretOffset = textPainter.getOffsetForCaret(
-        TextPosition(offset: safeOffset),
-        Rect.zero,
-      );
-      final cursorHeight = text.isEmpty
-          ? (style.fontSize ?? 30)
-          : textPainter.preferredLineHeight;
+  AudioSettings({
+    this.musicVolume = 0.5,
+    this.engineVolume = 0.3,
+    this.sfxVolume = 0.6,
+  });
+}
 
-      final p1 = paintOffset + caretOffset;
-      final p2 = p1 + Offset(0, cursorHeight);
+class LaneAnalysis {
+  int lane;
+  bool isDeadly;
+  bool isBlockedSide;
+  AIAction action; // Using AIAction subset logic mapped manually
+  double score;
+  double distanceToThreat;
+  CollisionType threatType;
+  double firstSolidDist;
 
-      canvas.drawLine(
-        p1,
-        p2,
-        Paint()
-          ..color = Colors.blueAccent
-          ..strokeWidth = 2,
-      );
-    }
-
-    // 4. Draw UI Border & Handles
-    if (isSelected) {
-      final rect = paintOffset & _cachedSize;
-
-      final borderPaint = Paint()
-        ..color = Colors.blueAccent
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5 / scale;
-
-      _drawDashedRect(canvas, rect, borderPaint);
-
-      final handleFill = Paint()..color = Colors.white;
-      final handleStroke = Paint()
-        ..color = Colors.blueAccent
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2 / scale;
-      final radius = handleRadius / scale;
-
-      final corners = [
-        rect.topLeft,
-        rect.topRight,
-        rect.bottomLeft,
-        rect.bottomRight,
-      ];
-      for (var point in corners) {
-        canvas.drawCircle(point, radius, handleFill);
-        canvas.drawCircle(point, radius, handleStroke);
-      }
-
-      final topCenter = rect.topCenter;
-      final rotPos = Offset(
-        topCenter.dx,
-        topCenter.dy - (rotationHandleDistance / scale),
-      );
-      canvas.drawLine(topCenter, rotPos, borderPaint);
-      canvas.drawCircle(rotPos, radius, handleFill);
-      canvas.drawCircle(rotPos, radius, handleStroke);
-    }
-  }
-
-  void _drawDashedRect(Canvas canvas, Rect rect, Paint paint) {
-    final path = Path()..addRect(rect);
-    final dashWidth = 10.0 / scale;
-    final dashSpace = 5.0 / scale;
-    for (final metric in path.computeMetrics()) {
-      var distance = 0.0;
-      while (distance < metric.length) {
-        canvas.drawPath(
-          metric.extractPath(distance, distance + dashWidth),
-          paint,
-        );
-        distance += dashWidth + dashSpace;
-      }
-    }
-  }
+  LaneAnalysis({
+    required this.lane,
+    this.isDeadly = false,
+    this.isBlockedSide = false,
+    this.action = AIAction.scanning, // 'none' equivalent?
+    this.score = 0,
+    this.distanceToThreat = 9999,
+    this.threatType = CollisionType.none,
+    this.firstSolidDist = 9999,
+  });
 }
